@@ -1,36 +1,42 @@
 pipeline {
-  environment {
-    registry = "durgaprasad/pipelineproject"
-    registryCredential = 'dockerhub'
-    dockerImage = ''
-  }
-  agent any
-  stages {
-    stage('Cloning Git') {
-      steps {
-        git 'https://github.com/gustavoapolinario/microservices-node-example-todo-frontend.git'
-      }
+    agent any
+    environment{
+        DOCKER_TAG = getDockerTag()
     }
-    stage('Building image') {
-      steps{
-        script {
-          dockerImage = docker.build registry + ":$BUILD_NUMBER"
+    stages{
+        stage('Build Docker Image'){
+            steps{
+                sh "docker build . -t kammana/nodeapp:${DOCKER_TAG} "
+            }
         }
-      }
-    }
-    stage('Deploy Image') {
-      steps{
-        script {
-          docker.withRegistry( '', registryCredential ) {
-            dockerImage.push()
-          }
+        stage('DockerHub Push'){
+            steps{
+                withCredentials([string(credentialsId: 'docker-hub', variable: 'dockerHubPwd')]) {
+                    sh "docker login -u kammana -p ${dockerHubPwd}"
+                    sh "docker push kammana/nodeapp:${DOCKER_TAG}"
+                }
+            }
         }
-      }
+        stage('Deploy to k8s'){
+            steps{
+                sh "chmod +x changeTag.sh"
+                sh "./changeTag.sh ${DOCKER_TAG}"
+                sshagent(['kops-machine']) {
+                    sh "scp -o StrictHostKeyChecking=no services.yml node-app-pod.yml ec2-user@52.66.70.61:/home/ec2-user/"
+                    script{
+                        try{
+                            sh "ssh ec2-user@52.66.70.61 kubectl apply -f ."
+                        }catch(error){
+                            sh "ssh ec2-user@52.66.70.61 kubectl create -f ."
+                        }
+                    }
+                }
+            }
+        }
     }
-    stage('Remove Unused docker image') {
-      steps{
-        sh "docker rmi $registry:$BUILD_NUMBER"
-      }
-    }
-  }
+}
+
+def getDockerTag(){
+    def tag  = sh script: 'git rev-parse HEAD', returnStdout: true
+    return tag
 }
